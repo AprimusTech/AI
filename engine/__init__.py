@@ -1,0 +1,1 @@
+"""Asynchronous chess-engine execution."""
