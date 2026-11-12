@@ -1,16 +1,16 @@
 """Player and game setup configuration."""
 
 from dataclasses import dataclass
-from enum import StrEnum
+from enum import Enum
 
 
-class GameMode(StrEnum):
+class GameMode(str, Enum):
 	PLAYER_VS_COMPUTER = "Player vs Computer"
 	PLAYER_VS_PLAYER = "Player vs Player"
 	COMPUTER_VS_COMPUTER = "Computer vs Computer"
 
 
-class PlayerType(StrEnum):
+class PlayerType(str, Enum):
 	HUMAN = "Human"
 	COMPUTER = "Computer"
 

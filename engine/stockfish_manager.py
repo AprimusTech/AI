@@ -66,7 +66,14 @@ class StockfishManager:
 			if engine is not None:
 				with self._lock:
 					self._engines.discard(engine)
-				engine.quit()
+					is_current = generation == self._generation
+				if is_current:
+					try:
+						engine.quit()
+					except (chess.engine.EngineError, chess.engine.EngineTerminatedError):
+						engine.close()
+				else:
+					engine.close()
 			with self._lock:
 				current = generation == self._generation
 				if current:
