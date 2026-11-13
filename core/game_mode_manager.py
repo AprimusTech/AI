@@ -10,7 +10,6 @@ class GameModeManager:
 		self.configure(configuration or GameConfiguration())
 
 	def configure(self, configuration):
-		self.configuration = configuration
 		if configuration.mode is GameMode.PLAYER_VS_COMPUTER:
 			expected_white = PlayerType.HUMAN if configuration.human_color else PlayerType.COMPUTER
 			expected_black = PlayerType.COMPUTER if configuration.human_color else PlayerType.HUMAN
@@ -22,6 +21,7 @@ class GameModeManager:
 		elif configuration.mode is GameMode.COMPUTER_VS_COMPUTER:
 			if configuration.white.player_type is not PlayerType.COMPUTER or configuration.black.player_type is not PlayerType.COMPUTER:
 				raise ValueError("Computer-vs-computer mode requires two computer players.")
+		self.configuration = configuration
 
 	def player(self, color):
 		return self.configuration.white if color == chess.WHITE else self.configuration.black

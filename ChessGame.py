@@ -1,11 +1,9 @@
-"""Single-file 3D chess game.
+"""3D chess game with Panda3D, python-chess, and Stockfish.
 
-Install: py -m pip install panda3d python-chess
-Optional computer opponent: install Stockfish and set STOCKFISH_PATH to its executable.
-Run: py ChessGame.py
-
-This self-contained build uses Panda3D's DirectGUI rather than PySide6 so that the
-entire application can live in the one source file available to this project.
+Create a Python 3.13 environment with ``py -3.13 -m venv .venv``, install
+dependencies with ``.venv\\Scripts\\python.exe -m pip install -r requirements.txt``,
+then run ``.venv\\Scripts\\python.exe ChessGame.py``. Computer modes use Stockfish
+from STOCKFISH_PATH, PATH, or a standard WinGet installation.
 python-chess is the sole authority for legal moves and game results.
 """
 
@@ -14,6 +12,9 @@ from __future__ import annotations
 import os
 import math
 import sqlite3
+import sys
+import tkinter
+from tkinter import filedialog
 from queue import Empty
 from datetime import datetime
 
@@ -21,26 +22,35 @@ try:
 	import chess  # pyright: ignore[reportMissingImports]
 	import chess.pgn  # pyright: ignore[reportMissingImports]
 except ImportError as exc:
-	raise SystemExit("Missing dependency. Install with: py -m pip install panda3d python-chess") from exc
+	raise SystemExit(
+		f"Missing chess dependency for {sys.executable}. "
+		f"Install with: \"{sys.executable}\" -m pip install -r requirements.txt"
+	) from exc
 
 try:
 	from direct.showbase.ShowBase import ShowBase  # pyright: ignore[reportMissingImports]
+	from direct.interval.IntervalGlobal import Func, LerpPosInterval, Parallel, Sequence
 	from panda3d.core import (
 		AmbientLight, DirectionalLight, Geom, GeomNode, GeomTriangles,
 		GeomVertexData, GeomVertexFormat, GeomVertexWriter, Point2, Point3,
 		Vec4,
 	)
 except ImportError as exc:
-	raise SystemExit("Missing Panda3D. Install with: py -m pip install panda3d") from exc
+	raise SystemExit(
+		f"Missing Panda3D dependency for {sys.executable}. "
+		f"Install with: \"{sys.executable}\" -m pip install -r requirements.txt"
+	) from exc
 
 from core.game_controller import GameController
 from core.game_mode_manager import GameModeManager
 from core.player_manager import PlayerManager
 from engine.engine_scheduler import EngineScheduler
-from engine.stockfish_manager import StockfishManager
+from engine.stockfish_manager import StockfishManager, default_engine_path
 from gui.game_screen import GameScreen
 from gui.game_setup_screen import GameSetupScreen
-from gui.player_configuration import GameConfiguration, GameMode
+from gui.player_configuration import (
+	GameConfiguration, GameMode, PlayerConfiguration, PlayerType,
+)
 
 
 SQ = 1.2
@@ -120,7 +130,7 @@ class ChessGame3D(ShowBase):
 		self.player_manager = PlayerManager(self.configuration)
 		self.mode = self.configuration.mode.value
 		self.human_color = chess.WHITE
-		self.engine_path = os.environ.get("STOCKFISH_PATH", "stockfish")
+		self.engine_path = default_engine_path()
 		self.stockfish = StockfishManager(self.engine_path)
 		self.engine_scheduler = EngineScheduler(self.stockfish)
 		self.clocks = [600.0, 600.0]
@@ -129,6 +139,10 @@ class ChessGame3D(ShowBase):
 		self.last_panel_tick = 0
 		self.review_ply = None
 		self.review_board = None
+		self.review_was_running = False
+		self.animation_busy = False
+		self.animation_generation = 0
+		self.move_animation = None
 		self.game_finished = False
 		self.time_expired = False
 		self.promotion_type = chess.QUEEN
@@ -177,6 +191,7 @@ class ChessGame3D(ShowBase):
 		self.game_screen = GameScreen(self)
 		self.setup_screen = GameSetupScreen(self.aspect2d, self.start_game, self.cancel_setup)
 		self.game_screen.layout(self.getAspectRatio())
+		self.game_screen.hide()
 		self.game_started = False
 		self.setup_open = True
 		self.setup_screen.show()
@@ -266,10 +281,19 @@ class ChessGame3D(ShowBase):
 			self.highlight_nodes.append(dot)
 
 	def on_click(self):
+		if not self.mouseWatcherNode.hasMouse():
+			return
+		m = self.mouseWatcherNode.getMouse()
+		aspect = self.getAspectRatio()
+		panel_boundary = (max(.72, aspect - .38) - .34) / aspect
 		if (
-			not self.mouseWatcherNode.hasMouse()
+			abs(m.getX()) > panel_boundary
+			or m.getY() < -.72
+			or m.getY() > .75
 			or not self.game_started
+			or self.setup_open
 			or self.game_finished
+			or self.animation_busy
 			or self.board.is_game_over(claim_draw=True)
 			or self.review_ply is not None
 			or not self.mode_manager.accepts_human_move(
@@ -279,7 +303,7 @@ class ChessGame3D(ShowBase):
 			)
 		):
 			return
-		m=self.mouseWatcherNode.getMouse(); near,far=Point3(),Point3()
+		near,far=Point3(),Point3()
 		if not self.camLens.extrude(Point2(m.getX(),m.getY()),near,far): return
 		a=self.render.getRelativePoint(self.camera,near); b=self.render.getRelativePoint(self.camera,far)
 		if abs(b.z-a.z)<1e-6: return
@@ -302,7 +326,7 @@ class ChessGame3D(ShowBase):
 		self.selected=None; self.legal_targets=set(); self.draw_indicators()
 
 	def play_move(self, move, source="human"):
-		if self.game_finished or self.review_ply is not None:
+		if self.game_finished or self.review_ply is not None or self.animation_busy:
 			return False
 		mover=self.board.turn
 		if source == "human" and not self.mode_manager.accepts_human_move(
@@ -311,17 +335,72 @@ class ChessGame3D(ShowBase):
 			return False
 		if source == "computer" and not self.mode_manager.is_computer_turn(mover):
 			return False
+		moving_node = self.piece_nodes.get(move.from_square)
+		captured_square = move.to_square
+		if self.board.is_en_passant(move):
+			captured_square += -8 if mover == chess.WHITE else 8
+		captured_node = self.piece_nodes.get(captured_square)
+		rook_move = None
+		if self.board.is_castling(move):
+			rank = chess.square_rank(move.from_square)
+			kingside = chess.square_file(move.to_square) > chess.square_file(move.from_square)
+			rook_from = chess.square(7 if kingside else 0, rank)
+			rook_to = chess.square(5 if kingside else 3, rank)
+			rook_node = self.piece_nodes.get(rook_from)
+			if rook_node is not None:
+				rook_move = (rook_node, self.square_pos(rook_to))
 		if not self.controller.play(move):
 			return False
 		if self.configuration.initial_time_seconds:
 			self.clocks[int(mover)] += self.increment
 		self.selected=None; self.legal_targets=set()
+		if captured_node is not None:
+			captured_node.removeNode()
+		self.refresh_player_panels()
+		self.update_status()
+		self.draw_indicators()
+		game_over = self.board.is_game_over(claim_draw=True)
+		intervals = []
+		if moving_node is not None:
+			x, y = self.square_pos(move.to_square)
+			intervals.append(LerpPosInterval(
+				moving_node, .2, (x, y, .06), startPos=moving_node.getPos(),
+			))
+		if rook_move is not None:
+			rook_node, (rook_x, rook_y) = rook_move
+			intervals.append(LerpPosInterval(
+				rook_node, .2, (rook_x, rook_y, .06), startPos=rook_node.getPos(),
+			))
+		if intervals:
+			self.animation_generation += 1
+			generation = self.animation_generation
+			self.animation_busy = True
+			self.move_animation = Sequence(
+				Parallel(*intervals),
+				Func(self._finish_move_animation, generation, game_over),
+			)
+			self.move_animation.start()
+		else:
+			self._finish_move_animation(self.animation_generation, game_over)
+		return True
+
+	def _finish_move_animation(self, generation, game_over):
+		if generation != self.animation_generation:
+			return
+		self.move_animation = None
+		self.animation_busy = False
 		self.refresh_board()
-		if self.board.is_game_over(claim_draw=True):
+		if game_over:
 			self.finish_game()
 		else:
 			self.request_engine_move()
-		return True
+
+	def _cancel_move_animation(self):
+		self.animation_generation += 1
+		if self.move_animation is not None:
+			self.move_animation.finish()
+			self.move_animation = None
+		self.animation_busy = False
 
 	def update_status(self):
 		board = self.display_board
@@ -331,8 +410,10 @@ class ChessGame3D(ShowBase):
 		elif self.board.is_checkmate(): text=f"Checkmate — {'Black' if self.board.turn else 'White'} wins"
 		elif self.board.is_stalemate(): text="Draw — stalemate"
 		elif self.board.is_insufficient_material(): text="Draw — insufficient material"
-		elif self.board.is_seventyfive_moves(): text="Draw — 75-move rule"
 		elif self.board.is_fivefold_repetition(): text="Draw — fivefold repetition"
+		elif self.board.is_seventyfive_moves(): text="Draw — 75-move rule"
+		elif self.board.can_claim_threefold_repetition(): text="Draw available — threefold repetition"
+		elif self.board.can_claim_fifty_moves(): text="Draw available — 50-move rule"
 		else:
 			player = self.player_manager.player(board.turn)
 			text=f"{player.name} to move" + (" — CHECK" if board.is_check() else "")
@@ -360,8 +441,16 @@ class ChessGame3D(ShowBase):
 		)
 
 	def review_position(self, ply):
-		if not 1 <= ply <= len(self.controller.history.records):
+		if self.animation_busy or not 1 <= ply <= len(self.controller.history.records):
 			return
+		self.review_was_running = (
+			self.game_started
+			and not self.game_finished
+			and not self.engine_scheduler.stopped
+			and not self.engine_scheduler.paused
+		)
+		if self.review_was_running:
+			self.engine_scheduler.pause()
 		self.review_ply = ply
 		self.review_board = self.controller.position_at(ply)
 		self.game_screen.set_reviewing(True)
@@ -378,6 +467,10 @@ class ChessGame3D(ShowBase):
 		self.game_screen.set_reviewing(False)
 		self.refresh_board()
 		self.game_screen.message.setText("")
+		if self.review_was_running:
+			self.engine_scheduler.resume()
+			self.request_engine_move()
+		self.review_was_running = False
 
 	@staticmethod
 	def format_time(seconds):
@@ -390,6 +483,11 @@ class ChessGame3D(ShowBase):
 			and not self.setup_open
 			and not self.game_finished
 			and self.configuration.initial_time_seconds
+			and not self.engine_scheduler.paused
+			and not (
+				self.mode_manager.is_computer_vs_computer
+				and self.engine_scheduler.stopped
+			)
 			and not self.board.is_game_over(claim_draw=True)
 		):
 			self.clocks[int(self.board.turn)]-=elapsed
@@ -414,12 +512,21 @@ class ChessGame3D(ShowBase):
 			result = self.stockfish.results.get_nowait()
 		except Empty:
 			result = None
-		if result is not None:
+		if (
+			result is not None
+			and result.generation == self.stockfish.generation
+			and self.engine_scheduler.can_schedule()
+		):
 			if result.error:
 				self.game_screen.message.setText(result.error)
 				self.engine_scheduler.stop()
 			elif result.move is not None:
-				self.play_move(result.move, source="computer")
+				if not self.play_move(result.move, source="computer"):
+					self.game_screen.message.setText("Stockfish returned an illegal move; computer play was stopped.")
+					self.engine_scheduler.stop()
+			else:
+				self.game_screen.message.setText("Stockfish returned no move; computer play was stopped.")
+				self.engine_scheduler.stop()
 		return task.cont
 
 	def set_promotion(self, value):
@@ -428,10 +535,13 @@ class ChessGame3D(ShowBase):
 	def new_game(self):
 		self.setup_open = True
 		self.engine_scheduler.pause()
-		self.setup_screen.show()
+		self._cancel_move_animation()
+		self.game_screen.hide()
+		self.setup_screen.show(allow_cancel=True)
 
 	def start_game(self, configuration):
 		self.engine_scheduler.stop()
+		self._cancel_move_animation()
 		self.configuration = configuration
 		self.mode_manager.configure(configuration)
 		self.player_manager.configure(configuration)
@@ -442,6 +552,7 @@ class ChessGame3D(ShowBase):
 		self.clocks = [float(configuration.initial_time_seconds)] * 2
 		self.review_ply = None
 		self.review_board = None
+		self.review_was_running = False
 		self.selected = None
 		self.legal_targets.clear()
 		self.game_finished = False
@@ -450,14 +561,19 @@ class ChessGame3D(ShowBase):
 		self.game_started = True
 		self.setup_open = False
 		self.last_tick = datetime.now().timestamp()
-		self.engine_scheduler.start()
+		if not self.mode_manager.is_computer_vs_computer:
+			self.engine_scheduler.start()
+		self.game_screen.show()
 		self.game_screen.set_mode(self.mode)
 		self.game_screen.message.setText("")
 		self.refresh_board()
-		self.request_engine_move()
+		if not self.mode_manager.is_computer_vs_computer:
+			self.request_engine_move()
 
 	def cancel_setup(self):
 		self.setup_open = False
+		self.last_tick = datetime.now().timestamp()
+		self.game_screen.show()
 		if self.game_started:
 			self.engine_scheduler.resume()
 			self.request_engine_move()
@@ -465,31 +581,39 @@ class ChessGame3D(ShowBase):
 			self.start_game(GameConfiguration())
 
 	def undo(self):
-		if self.review_ply is not None or not self.board.move_stack:
+		if self.animation_busy or self.review_ply is not None or not self.board.move_stack:
 			return
 		was_stopped = self.engine_scheduler.stopped
+		was_finished = self.game_finished
+		was_paused = self.engine_scheduler.paused
 		self.engine_scheduler.stop()
 		self.controller.undo()
-		if (
-			self.configuration.mode is GameMode.PLAYER_VS_COMPUTER
-			and self.board.turn == self.human_color
-			and self.board.move_stack
-		):
+		if self.configuration.mode is GameMode.PLAYER_VS_COMPUTER and self.board.move_stack:
 			self.controller.undo()
 		self.review_ply = None
 		self.review_board = None
-		if not was_stopped:
+		self.review_was_running = False
+		self.game_finished = False
+		if not was_stopped or was_finished:
 			self.engine_scheduler.start()
+			if was_paused and not was_finished:
+				self.engine_scheduler.pause()
 		self.refresh_board()
 		self.game_screen.message.setText("Last move undone")
 		self.request_engine_move()
 
 	def resign(self):
-		if self.game_started and not self.game_finished and not self.board.is_game_over():
+		if (
+			self.game_started
+			and not self.game_finished
+			and self.review_ply is None
+			and not self.board.is_game_over()
+		):
 			result="0-1" if self.board.turn==chess.WHITE else "1-0"
 			self.game_finished = True
 			self.engine_scheduler.stop()
-			self.game_screen.message.setText(("Black" if self.board.turn else "White")+" resigns")
+			resigning_player = self.player_manager.player(self.board.turn)
+			self.game_screen.message.setText(f"{resigning_player.name} resigns")
 			self.record_game(result)
 
 	def start_computers(self):
@@ -544,6 +668,69 @@ class ChessGame3D(ShowBase):
 		self.game_screen.message.setText(f"Saved {filename}")
 		self.record_game(game.headers["Result"])
 
+	def load_pgn(self):
+		try:
+			root = tkinter.Tk()
+			root.withdraw()
+			root.attributes("-topmost", True)
+			try:
+				filename = filedialog.askopenfilename(
+					title="Load chess game",
+					filetypes=[("PGN files", "*.pgn"), ("All files", "*.*")],
+				)
+			finally:
+				root.destroy()
+		except tkinter.TclError as exc:
+			self.game_screen.message.setText(f"Could not open PGN file picker: {exc}")
+			return
+		if not filename:
+			return
+		try:
+			with open(filename, encoding="utf-8") as file:
+				game = chess.pgn.read_game(file)
+			if game is None:
+				raise ValueError("The selected file does not contain a PGN game.")
+			if game.errors:
+				raise ValueError(f"The PGN contains errors: {game.errors[0]}")
+			loaded_board = game.board()
+			for move in game.mainline_moves():
+				if move not in loaded_board.legal_moves:
+					raise ValueError(f"PGN contains an illegal move: {move.uci()}.")
+				loaded_board.push(move)
+		except (OSError, UnicodeError, ValueError) as exc:
+			self.game_screen.message.setText(f"PGN load failed: {exc}")
+			return
+		self.engine_scheduler.stop()
+		self._cancel_move_animation()
+		self.controller.load(loaded_board)
+		self.board = self.controller.board
+		self.configuration = GameConfiguration(
+			mode=GameMode.PLAYER_VS_PLAYER,
+			white=PlayerConfiguration(
+				game.headers.get("White", "Player 1"), PlayerType.HUMAN,
+			),
+			black=PlayerConfiguration(
+				game.headers.get("Black", "Player 2"), PlayerType.HUMAN,
+			),
+		)
+		self.mode_manager.configure(self.configuration)
+		self.player_manager.configure(self.configuration)
+		self.mode = self.configuration.mode.value
+		self.game_screen.show()
+		self.game_screen.set_mode(self.mode)
+		self.game_screen.set_reviewing(False)
+		self.game_started = True
+		self.setup_open = False
+		self.game_finished = self.board.is_game_over(claim_draw=True)
+		self.review_ply = None
+		self.review_board = None
+		self.review_was_running = False
+		self.clocks = [600.0, 600.0]
+		self.last_tick = datetime.now().timestamp()
+		self.engine_scheduler.start()
+		self.refresh_board()
+		self.game_screen.message.setText(f"Loaded {os.path.basename(filename)}")
+
 	def record_game(self, result):
 		pgn=chess.pgn.Game.from_board(self.board)
 		pgn.headers["White"] = self.configuration.white.name
@@ -573,6 +760,7 @@ class ChessGame3D(ShowBase):
 
 	def userExit(self):
 		self.engine_scheduler.stop()
+		self._cancel_move_animation()
 		self.stockfish.close()
 		self.setup_screen.destroy()
 		self.game_screen.destroy()

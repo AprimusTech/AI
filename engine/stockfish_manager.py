@@ -1,11 +1,33 @@
 """Threaded Stockfish requests with cancellation and result delivery."""
 
+import os
 import queue
+import shutil
 import threading
 from dataclasses import dataclass
+from pathlib import Path
 
 import chess
 import chess.engine
+
+
+def default_engine_path():
+	configured = os.environ.get("STOCKFISH_PATH")
+	if configured:
+		return configured
+	on_path = shutil.which("stockfish")
+	if on_path:
+		return on_path
+	local_app_data = os.environ.get("LOCALAPPDATA")
+	if local_app_data:
+		matches = sorted(
+			(Path(local_app_data) / "Microsoft" / "WinGet" / "Packages").glob(
+				"Stockfish.Stockfish*/stockfish/stockfish-windows-x86-64-universal.exe",
+			),
+		)
+		if matches:
+			return str(matches[0])
+	return "stockfish"
 
 
 @dataclass(frozen=True)
@@ -29,6 +51,11 @@ class StockfishManager:
 	def busy(self):
 		with self._lock:
 			return self._active
+
+	@property
+	def generation(self):
+		with self._lock:
+			return self._generation
 
 	def request(self, fen, color, difficulty, thinking_seconds):
 		with self._lock:

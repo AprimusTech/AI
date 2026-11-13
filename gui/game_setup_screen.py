@@ -34,8 +34,12 @@ class GameSetupScreen:
 		self.black_name = self._entry("Player 2", .52, .22)
 		self._label("Player Type", -.52, .08, .027)
 		self._label("Player Type", .52, .08, .027)
-		self.white_type = self._menu(["Human", "Computer"], -.52, -.02)
-		self.black_type = self._menu(["Human", "Computer"], .52, -.02)
+		self.white_type = self._menu(
+			["Human", "Computer"], -.52, -.02, command=self._white_type_changed,
+		)
+		self.black_type = self._menu(
+			["Human", "Computer"], .52, -.02, command=self._black_type_changed,
+		)
 		self.white_skill_label = self._label("Difficulty (1-20)", -.52, -.17, .027)
 		self.black_skill_label = self._label("Difficulty (1-20)", .52, -.17, .027)
 		skills = [str(level) for level in range(1, 21)]
@@ -125,12 +129,26 @@ class GameSetupScreen:
 		if not hasattr(self, "white_type"):
 			return
 		human_white = value != "Black"
-		self.white_type.set("Human" if human_white else "Computer")
-		self.black_type.set("Computer" if human_white else "Human")
+		self.white_type.set("Human" if human_white else "Computer", fCommand=0)
+		self.black_type.set("Computer" if human_white else "Human", fCommand=0)
 		self.white_name.enterText("Human" if human_white else "Computer")
 		self.black_name.enterText("Computer" if human_white else "Human")
 		if hasattr(self, "mode_menu"):
 			self._update_difficulty_visibility(GameMode(self.mode_menu.get()))
+
+	def _white_type_changed(self, value):
+		if not hasattr(self, "human_color") or GameMode(self.mode_menu.get()) is not GameMode.PLAYER_VS_COMPUTER:
+			return
+		self.black_type.set("Computer" if value == "Human" else "Human", fCommand=0)
+		self.human_color.set("White" if value == "Human" else "Black", fCommand=0)
+		self._set_human_color(self.human_color.get())
+
+	def _black_type_changed(self, value):
+		if not hasattr(self, "human_color") or GameMode(self.mode_menu.get()) is not GameMode.PLAYER_VS_COMPUTER:
+			return
+		self.white_type.set("Computer" if value == "Human" else "Human", fCommand=0)
+		self.human_color.set("Black" if value == "Human" else "White", fCommand=0)
+		self._set_human_color(self.human_color.get())
 
 	def _update_difficulty_visibility(self, mode):
 		if mode is GameMode.COMPUTER_VS_COMPUTER:
@@ -181,7 +199,8 @@ class GameSetupScreen:
 		self.hide()
 		self.cancel_callback()
 
-	def show(self):
+	def show(self, allow_cancel=False):
+		self.cancel_button.show() if allow_cancel else self.cancel_button.hide()
 		self.frame.show()
 
 	def hide(self):

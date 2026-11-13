@@ -33,6 +33,11 @@ class PlayerPanel:
 			pos=(0, 0, .45), text_fg=(.84, .86, .9, 1),
 			frameColor=(0, 0, 0, 0),
 		)
+		self.history_heading = DirectLabel(
+			parent=self.frame, text="Move     White       Black", scale=.019,
+			pos=(0, 0, .395), text_fg=(.68, .72, .79, 1),
+			frameColor=(0, 0, 0, 0),
+		)
 		self.history = DirectScrolledFrame(
 			parent=self.frame, frameSize=(-.31, .31, -.79, .37),
 			canvasSize=(-.31, .31, -.1, 0), pos=(0, 0, 0),
@@ -67,7 +72,8 @@ class PlayerPanel:
 			y = -(index + .5) * self._row_height
 			white = white_moves.get(number)
 			black = black_moves.get(number)
-			is_latest = max((record.ply for record in (white, black) if record), default=0) == current_ply
+			active_ply = review_ply if review_ply is not None else current_ply
+			is_latest = max((record.ply for record in (white, black) if record), default=0) == active_ply
 			bg = (.34, .25, .10, 1) if is_latest else (
 				(.13, .16, .2, 1) if index % 2 == 0 else (.095, .11, .15, 1)
 			)
@@ -78,21 +84,22 @@ class PlayerPanel:
 				frameColor=(0, 0, 0, 0),
 			)
 			self._rows.append(number_label)
-			self._add_move(white, -.075, y, bg, active_fg, review_ply)
-			self._add_move(black, .155, y, bg, active_fg, review_ply)
+			self._add_move(white, -.075, y, bg, active_fg, active_ply)
+			self._add_move(black, .155, y, bg, active_fg, active_ply)
 
-		self.history["verticalScroll"].setValue(1)
+		self.history.verticalScroll.setValue(1)
 
 	def _add_move(self, record, x, y, background, active_fg, review_ply):
 		if record is None:
 			return
-		is_reviewed = review_ply == record.ply
-		color = active_fg if is_reviewed else (
+		is_focused = review_ply == record.ply
+		color = active_fg if is_focused else (
 			(.95, .91, .78, 1) if record.color == chess.WHITE else (.70, .76, .86, 1)
 		)
 		button = DirectButton(
 			parent=self.history.getCanvas(), text=record.san,
-			scale=1, text_scale=.023, pos=(x, 0, y), frameColor=background,
+			scale=1, text_scale=.023, pos=(x, 0, y),
+			frameColor=(.30, .36, .20, 1) if is_focused else background,
 			frameSize=(-.078, .078, -.037, .037),
 			command=self.review_callback, extraArgs=[record.ply],
 			text_fg=color, relief=1, borderWidth=(.004, .004),

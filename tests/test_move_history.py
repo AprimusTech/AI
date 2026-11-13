@@ -37,6 +37,15 @@ class MoveHistoryTests(unittest.TestCase):
 		self.assertEqual([record.san for record in controller.history.records], ["e4", "e5"])
 		self.assertEqual(controller.position_at(2).fen(), controller.board.fen())
 
+	def test_load_rebuilds_authoritative_history(self):
+		controller = GameController()
+		loaded = chess.Board()
+		for uci in ("e2e4", "e7e5", "g1f3"):
+			loaded.push_uci(uci)
+		controller.load(loaded)
+		self.assertIs(controller.board, loaded)
+		self.assertEqual([record.san for record in controller.history.records], ["e4", "e5", "Nf3"])
+
 	def test_check_and_checkmate_notation_is_kept(self):
 		controller = GameController()
 		for uci in ("f2f3", "e7e5", "g2g4", "d8h4"):
