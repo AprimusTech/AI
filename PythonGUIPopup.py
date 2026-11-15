@@ -1,6 +1,5 @@
 """A simple console-based Ludo game for two to four players."""
 
-import math
 import random
 import tkinter as tk
 
@@ -9,6 +8,16 @@ TRACK_SIZE = 52
 HOME = 57
 START_SQUARES = (0, 13, 26, 39)
 SAFE_SQUARES = {0, 8, 13, 21, 26, 34, 39, 47}
+
+
+def screen_fit_scale(root, base_width, base_height, vertical_reserve=100, maximum=1.8):
+	"""Choose a readable scale that keeps a window inside the current screen."""
+	available_width = max(1, root.winfo_screenwidth() - 32)
+	available_height = max(1, root.winfo_screenheight() - vertical_reserve)
+	return max(
+		0.4,
+		min(maximum, available_width / base_width, available_height / base_height),
+	)
 
 
 def show_popup(message):
@@ -21,15 +30,21 @@ def show_popup(message):
 
 	window.title("Ludo")
 	window.resizable(False, False)
-	canvas = tk.Canvas(window, width=220, height=100, bg="white", highlightthickness=0)
+	scale = screen_fit_scale(window, 280, 190, vertical_reserve=80, maximum=1.8)
+	size = lambda value: max(1, round(value * scale))
+	canvas = tk.Canvas(
+		window, width=size(220), height=size(100),
+		bg="white", highlightthickness=0,
+	)
 	canvas.pack(padx=16, pady=(16, 8))
 	for x, y, color in (
 		(55, 50, "#dc2828"), (165, 50, "#28a046"),
 		(110, 25, "#ebc319"), (110, 75, "#2d5ad2"),
 	):
-		canvas.create_oval(x - 18, y - 18, x + 18, y + 18, fill=color, outline="")
-	tk.Label(window, text=message, font=("TkDefaultFont", 12)).pack(padx=16, pady=8)
-	tk.Button(window, text="OK", command=window.destroy).pack(pady=(0, 16))
+		x, y, radius = size(x), size(y), size(18)
+		canvas.create_oval(x - radius, y - radius, x + radius, y + radius, fill=color, outline="")
+	tk.Label(window, text=message, font=("TkDefaultFont", size(12))).pack(padx=16, pady=8)
+	tk.Button(window, text="OK", command=window.destroy, font=("TkDefaultFont", size(10))).pack(pady=(0, 16))
 	window.mainloop()
 
 
@@ -51,6 +66,20 @@ def play_ludo():
 			self.root = tk.Tk()
 			self.root.title("Ludo")
 			self.root.resizable(False, False)
+			self.scale = screen_fit_scale(
+				self.root, self.WIDTH, self.WIDTH, vertical_reserve=110,
+			)
+			self.WIDTH = round(type(self).WIDTH * self.scale)
+			self.CENTER = self.WIDTH / 2
+			self.CELL = round(type(self).CELL * self.scale)
+			self.BOARD_ORIGIN = round(type(self).BOARD_ORIGIN * self.scale)
+			window_width = self.WIDTH + 32
+			window_height = self.WIDTH + 96
+			screen_width = self.root.winfo_screenwidth()
+			screen_height = self.root.winfo_screenheight()
+			x = max(0, (screen_width - window_width) // 2)
+			y = max(0, (screen_height - window_height) // 2)
+			self.root.geometry(f"{window_width}x{window_height}+{x}+{y}")
 			self.players = list(PLAYER_NAMES)
 			self.pawns = {name: [-1, -1, -1, -1] for name in self.players}
 			self.turn = 0
@@ -58,25 +87,40 @@ def play_ludo():
 			self.choices = []
 			self.finished = False
 
-			controls = tk.Frame(self.root, padx=10, pady=8)
+			controls = tk.Frame(
+				self.root, padx=self.px(10), pady=self.px(8),
+			)
 			controls.pack(fill="x")
-			tk.Label(controls, text="Players:").pack(side="left")
+			tk.Label(
+				controls, text="Players:",
+				font=("TkDefaultFont", self.px(10)),
+			).pack(side="left")
 			self.player_count = tk.IntVar(value=4)
-			tk.Spinbox(controls, from_=2, to=4, width=3,
-					   textvariable=self.player_count).pack(side="left", padx=5)
-			self.roll_button = tk.Button(controls, text="Roll dice",
-									 command=self.roll_dice)
-			self.roll_button.pack(side="left", padx=6)
-			self.status = tk.Label(controls, text="Red's turn — click Roll dice")
-			self.status.pack(side="left", padx=8)
+			tk.Spinbox(
+				controls, from_=2, to=4, width=3,
+				textvariable=self.player_count, font=("TkDefaultFont", self.px(10)),
+			).pack(side="left", padx=self.px(5))
+			self.roll_button = tk.Button(
+				controls, text="Roll dice", command=self.roll_dice,
+				font=("TkDefaultFont", self.px(10)),
+			)
+			self.roll_button.pack(side="left", padx=self.px(6))
+			self.status = tk.Label(
+				controls, text="Red's turn — click Roll dice",
+				font=("TkDefaultFont", self.px(10)),
+			)
+			self.status.pack(side="left", padx=self.px(8))
 			self.canvas = tk.Canvas(self.root, width=self.WIDTH, height=self.WIDTH,
 								 bg="#faf7ed", highlightthickness=0)
-			self.canvas.pack(padx=8, pady=(0, 8))
+			self.canvas.pack(padx=self.px(8), pady=(0, self.px(8)))
 			self.canvas.bind("<Button-1>", self.select_pawn)
 			self.draw_board()
 			self.draw_pawns()
 
-		def point(self, square, radius=None):
+		def px(self, value):
+			return max(1, round(value * self.scale))
+
+		def point(self, square):
 			row, col = self.TRACK[square % TRACK_SIZE]
 			return self.cell_center(row, col)
 
@@ -89,16 +133,18 @@ def play_ludo():
 			left = top = self.BOARD_ORIGIN
 			right = left + 15 * self.CELL
 			bottom = top + 15 * self.CELL
-			c.create_rectangle(left - 5, top - 5, right + 5, bottom + 5,
-							fill="#fffdf7", outline="#594832", width=3)
+			c.create_rectangle(left - self.px(5), top - self.px(5),
+							right + self.px(5), bottom + self.px(5),
+							fill="#fffdf7", outline="#594832", width=self.px(3))
 			# Four colored home yards and their inset pawn areas.
 			for index, (row, col) in enumerate(((1, 1), (1, 9), (9, 9), (9, 1))):
 				x1, y1 = self.cell_center(row, col)
 				x2, y2 = self.cell_center(row + 4, col + 4)
-				c.create_rectangle(x1 - 17, y1 - 17, x2 + 17, y2 + 17,
-								fill=self.COLORS[index], outline="#594832", width=2)
-				c.create_rectangle(x1 + 10, y1 + 10, x2 - 10, y2 - 10,
-								fill="#fffdf7", outline="white", width=3)
+				inset, outer = self.px(10), self.px(17)
+				c.create_rectangle(x1 - outer, y1 - outer, x2 + outer, y2 + outer,
+								fill=self.COLORS[index], outline="#594832", width=self.px(2))
+				c.create_rectangle(x1 + inset, y1 + inset, x2 - inset, y2 - inset,
+								fill="#fffdf7", outline="white", width=self.px(3))
 			lanes = (
 				[(row, 7) for row in range(1, 6)],
 				[(7, col) for col in range(13, 8, -1)],
@@ -108,20 +154,24 @@ def play_ludo():
 			for color, lane in zip(self.COLORS, lanes):
 				for row, col in lane:
 					x, y = self.cell_center(row, col)
-					c.create_rectangle(x - 15, y - 15, x + 15, y + 15,
-									fill=color, outline="#8d806c", width=1)
+					half_cell = self.px(15)
+					c.create_rectangle(x - half_cell, y - half_cell, x + half_cell, y + half_cell,
+									fill=color, outline="#8d806c", width=self.px(1))
 			for square in range(TRACK_SIZE):
 				x, y = self.point(square)
 				color = "#fffdf7" if square in SAFE_SQUARES else "#e8dfce"
-				c.create_rectangle(x - 15, y - 15, x + 15, y + 15,
-								   fill=color, outline="#8d806c", width=1)
+				half_cell = self.px(15)
+				c.create_rectangle(x - half_cell, y - half_cell, x + half_cell, y + half_cell,
+								   fill=color, outline="#8d806c", width=self.px(1))
 				if square in START_SQUARES:
 					idx = START_SQUARES.index(square)
-					c.create_rectangle(x - 13, y - 13, x + 13, y + 13,
-									   fill=self.COLORS[idx], outline="#594832", width=1)
+					start_inset = self.px(13)
+					c.create_rectangle(x - start_inset, y - start_inset,
+									   x + start_inset, y + start_inset,
+									   fill=self.COLORS[idx], outline="#594832", width=self.px(1))
 				elif square in SAFE_SQUARES:
 					c.create_text(x, y, text="★", fill="#b58a25",
-								  font=("TkDefaultFont", 12, "bold"))
+								  font=("TkDefaultFont", self.px(12), "bold"))
 			# Decorative four-color home finish.
 			cx, cy = self.CENTER, self.CENTER
 			h = 2.5 * self.CELL
@@ -133,15 +183,17 @@ def play_ludo():
 							 fill=self.COLORS[2], outline="white", width=2)
 			c.create_polygon(cx, cy, cx, cy + h, cx - h, cy + h,
 							 fill=self.COLORS[3], outline="white", width=2)
-			c.create_oval(cx - 13, cy - 13, cx + 13, cy + 13,
-						   fill="#fffdf7", outline="#594832", width=2)
+			center_radius = self.px(13)
+			c.create_oval(cx - center_radius, cy - center_radius,
+						   cx + center_radius, cy + center_radius,
+						   fill="#fffdf7", outline="#594832", width=self.px(2))
 
 		def pawn_point(self, player_index, pawn_index, position):
 			if position == -1:
 				bases = ((3, 3), (3, 11), (11, 11), (11, 3))
 				row, col = bases[player_index]
 				offsets = ((-20, -20), (20, -20), (-20, 20), (20, 20))
-				dx, dy = offsets[pawn_index]
+				dx, dy = (self.px(offset) for offset in offsets[pawn_index])
 				x, y = self.cell_center(row, col)
 				return x + dx, y + dy
 			if position < TRACK_SIZE:
@@ -163,11 +215,12 @@ def play_ludo():
 					x, y = self.pawn_point(player_index, pawn_index, position)
 					outline = "white" if (player_index == self.turn and pawn_index in self.choices) else "#30291f"
 					width = 4 if pawn_index in self.choices and player_index == self.turn else 1
-					self.canvas.create_oval(x - 10, y - 10, x + 10, y + 10,
+					radius = self.px(10)
+					self.canvas.create_oval(x - radius, y - radius, x + radius, y + radius,
 										fill=self.COLORS[player_index], outline=outline,
-										width=width, tags="pawn")
+										width=self.px(width), tags="pawn")
 					self.canvas.create_text(x, y, text=str(pawn_index + 1),
-										fill="white", font=("TkDefaultFont", 8, "bold"),
+										fill="white", font=("TkDefaultFont", self.px(8), "bold"),
 										tags="pawn")
 
 		def roll_dice(self):
@@ -194,7 +247,7 @@ def play_ludo():
 			name = self.players[self.turn]
 			for pawn_index in self.choices:
 				x, y = self.pawn_point(self.turn, pawn_index, self.pawns[name][pawn_index])
-				if (event.x - x) ** 2 + (event.y - y) ** 2 <= 22 ** 2:
+				if (event.x - x) ** 2 + (event.y - y) ** 2 <= self.px(22) ** 2:
 					self.move_pawn(pawn_index)
 					return
 

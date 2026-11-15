@@ -2,8 +2,10 @@
 
 Create a Python 3.13 environment with ``py -3.13 -m venv .venv``, install
 dependencies with ``.venv\\Scripts\\python.exe -m pip install -r requirements.txt``,
-then run ``.venv\\Scripts\\python.exe ChessGame.py``. Computer modes use Stockfish
-from STOCKFISH_PATH, PATH, or a standard WinGet installation.
+then run ``.venv\\Scripts\\python.exe ChessGame.py``. Running the file with a
+different interpreter automatically switches to the project environment when
+available. Use ``ChessGame.py --check-dependencies`` to verify game imports.
+Computer modes use Stockfish from STOCKFISH_PATH, PATH, or WinGet.
 python-chess is the sole authority for legal moves and game results.
 """
 
@@ -13,10 +15,54 @@ import os
 import math
 import sqlite3
 import sys
+import subprocess
 import tkinter
+from pathlib import Path
 from tkinter import filedialog
 from queue import Empty
 from datetime import datetime
+
+PROJECT_ROOT = Path(__file__).resolve().parent
+REQUIREMENTS_FILE = PROJECT_ROOT / "requirements.txt"
+
+
+def restart_with_project_environment_if_needed():
+	"""Rerun direct launches in the project venv when chess packages are absent."""
+	if __name__ != "__main__":
+		return
+	import importlib.util
+
+	try:
+		missing_dependencies = any(
+			importlib.util.find_spec(module) is None
+			for module in ("chess", "panda3d", "direct")
+		)
+	except ModuleNotFoundError:
+		missing_dependencies = True
+	if not missing_dependencies:
+		return
+
+	interpreter = PROJECT_ROOT / ".venv" / "Scripts" / "python.exe"
+	if (
+		not interpreter.is_file()
+		or interpreter.resolve().as_posix().casefold()
+		== Path(sys.executable).resolve().as_posix().casefold()
+	):
+		return
+
+	print(
+		f"Chess dependencies are missing from {sys.executable}; "
+		f"restarting with {interpreter}.",
+		flush=True,
+	)
+	raise SystemExit(subprocess.call([
+		str(interpreter),
+		str(Path(__file__).resolve()),
+		*sys.argv[1:],
+	]))
+
+
+restart_with_project_environment_if_needed()
 
 try:
 	import chess  # pyright: ignore[reportMissingImports]
@@ -24,7 +70,7 @@ try:
 except ImportError as exc:
 	raise SystemExit(
 		f"Missing chess dependency for {sys.executable}. "
-		f"Install with: \"{sys.executable}\" -m pip install -r requirements.txt"
+		f"Install with: \"{sys.executable}\" -m pip install -r \"{REQUIREMENTS_FILE}\""
 	) from exc
 
 try:
@@ -38,7 +84,7 @@ try:
 except ImportError as exc:
 	raise SystemExit(
 		f"Missing Panda3D dependency for {sys.executable}. "
-		f"Install with: \"{sys.executable}\" -m pip install -r requirements.txt"
+		f"Install with: \"{sys.executable}\" -m pip install -r \"{REQUIREMENTS_FILE}\""
 	) from exc
 
 from core.game_controller import GameController
@@ -184,8 +230,11 @@ class ChessGame3D(ShowBase):
 
 	def _place_camera(self):
 		theta = math.radians(self.camera_angle)
-		self.camera.setPos(self.camera_distance*math.cos(theta), -self.camera_distance*math.sin(theta), self.camera_distance*.78)
-		self.camera.lookAt(0, 0, .1)
+		camera = self.camera
+		if camera is None:
+			return
+		camera.setPos(self.camera_distance*math.cos(theta), -self.camera_distance*math.sin(theta), self.camera_distance*.78)
+		camera.lookAt(0, 0, .1)
 
 	def _setup_ui(self):
 		self.game_screen = GameScreen(self)
@@ -199,7 +248,10 @@ class ChessGame3D(ShowBase):
 	def _window_resized(self, window):
 		if window is None:
 			return
-		aspect = window.getAspectRatio()
+		height = window.getYSize()
+		if height <= 0:
+			return
+		aspect = window.getXSize() / height
 		self.game_screen.layout(aspect)
 		self.camera_distance = max(21.5, 23.0 * 1.6 / max(.8, aspect))
 		self._place_camera()
@@ -281,9 +333,10 @@ class ChessGame3D(ShowBase):
 			self.highlight_nodes.append(dot)
 
 	def on_click(self):
-		if not self.mouseWatcherNode.hasMouse():
+		mouse_watcher = self.mouseWatcherNode
+		if mouse_watcher is None or not mouse_watcher.hasMouse():
 			return
-		m = self.mouseWatcherNode.getMouse()
+		m = mouse_watcher.getMouse()
 		aspect = self.getAspectRatio()
 		panel_boundary = (max(.72, aspect - .38) - .34) / aspect
 		if (
@@ -304,6 +357,8 @@ class ChessGame3D(ShowBase):
 		):
 			return
 		near,far=Point3(),Point3()
+		if self.camLens is None:
+			return
 		if not self.camLens.extrude(Point2(m.getX(),m.getY()),near,far): return
 		a=self.render.getRelativePoint(self.camera,near); b=self.render.getRelativePoint(self.camera,far)
 		if abs(b.z-a.z)<1e-6: return
@@ -769,4 +824,7 @@ class ChessGame3D(ShowBase):
 
 
 if __name__ == "__main__":
+	if "--check-dependencies" in sys.argv[1:]:
+		print(f"Chess dependencies are available using {sys.executable}.")
+		raise SystemExit(0)
 	ChessGame3D().run()
